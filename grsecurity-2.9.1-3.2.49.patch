@@ -200,7 +200,7 @@ index dfa6fc6..be27ac3 100644
 +zconf.lex.c
  zoffset.h
 diff --git a/Documentation/kernel-parameters.txt b/Documentation/kernel-parameters.txt
-index 2ba8272..187c634 100644
+index 2ba8272..e2a9806 100644
 --- a/Documentation/kernel-parameters.txt
 +++ b/Documentation/kernel-parameters.txt
 @@ -859,6 +859,9 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
@@ -213,7 +213,7 @@ index 2ba8272..187c634 100644
  	hashdist=	[KNL,NUMA] Large hashes allocated during boot
  			are distributed across NUMA nodes.  Defaults on
  			for 64-bit NUMA, off otherwise.
-@@ -1960,6 +1963,18 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
+@@ -1960,6 +1963,22 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
  			the specified number of seconds.  This is to be used if
  			your oopses keep scrolling off the screen.
  
@@ -221,6 +221,10 @@ index 2ba8272..187c634 100644
 +			virtualization environments that don't cope well with the
 +			expand down segment used by UDEREF on X86-32 or the frequent
 +			page table updates on X86-64.
++
++	pax_sanitize_slab=
++			0/1 to disable/enable slab object sanitization (enabled by
++			default).
 +
 +	pax_softmode=	0/1 to disable/enable PaX softmode on boot already.
 +
@@ -266,7 +270,7 @@ index 88fd7f5..b318a78 100644
  ==============================================================
  
 diff --git a/Makefile b/Makefile
-index 299e2eb..cb3e698 100644
+index 2e3d791..7e68b16 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -245,8 +245,9 @@ CONFIG_SHELL := $(shell if [ -x "$$BASH" ]; then echo $$BASH; \
@@ -6741,7 +6745,7 @@ index 42b282f..408977c 100644
  		addr = vmm->vm_end;
  		if (flags & MAP_SHARED)
 diff --git a/arch/sparc/kernel/sys_sparc_64.c b/arch/sparc/kernel/sys_sparc_64.c
-index 5e4252b..05942dd 100644
+index 5e4252b..379f84f 100644
 --- a/arch/sparc/kernel/sys_sparc_64.c
 +++ b/arch/sparc/kernel/sys_sparc_64.c
 @@ -119,12 +119,13 @@ unsigned long arch_get_unmapped_area(struct file *filp, unsigned long addr, unsi
@@ -6884,17 +6888,31 @@ index 5e4252b..05942dd 100644
  
  bottomup:
  	/*
-@@ -365,6 +368,10 @@ static unsigned long mmap_rnd(void)
+@@ -361,10 +364,14 @@ unsigned long get_fb_unmapped_area(struct file *filp, unsigned long orig_addr, u
+ EXPORT_SYMBOL(get_fb_unmapped_area);
+ 
+ /* Essentially the same as PowerPC.  */
+-static unsigned long mmap_rnd(void)
++static unsigned long mmap_rnd(struct mm_struct *mm)
  {
  	unsigned long rnd = 0UL;
  
 +#ifdef CONFIG_PAX_RANDMMAP
-+	if (!(current->mm->pax_flags & MF_PAX_RANDMMAP))
++	if (!(mm->pax_flags & MF_PAX_RANDMMAP))
 +#endif
 +
  	if (current->flags & PF_RANDOMIZE) {
  		unsigned long val = get_random_int();
  		if (test_thread_flag(TIF_32BIT))
+@@ -377,7 +384,7 @@ static unsigned long mmap_rnd(void)
+ 
+ void arch_pick_mmap_layout(struct mm_struct *mm)
+ {
+-	unsigned long random_factor = mmap_rnd();
++	unsigned long random_factor = mmap_rnd(mm);
+ 	unsigned long gap;
+ 
+ 	/*
 @@ -390,6 +397,12 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
  	    gap == RLIM_INFINITY ||
  	    sysctl_legacy_va_layout) {
@@ -24926,7 +24944,7 @@ index a63efd6..ccecad8 100644
  	ret
  	CFI_ENDPROC
 diff --git a/arch/x86/lib/usercopy_32.c b/arch/x86/lib/usercopy_32.c
-index e218d5d..7d522b8 100644
+index e218d5d..f655ced 100644
 --- a/arch/x86/lib/usercopy_32.c
 +++ b/arch/x86/lib/usercopy_32.c
 @@ -43,7 +43,7 @@ do {									   \
@@ -25471,7 +25489,7 @@ index e218d5d..7d522b8 100644
  	return n;
  }
  EXPORT_SYMBOL(__copy_from_user_ll_nozero);
-@@ -827,65 +943,50 @@ unsigned long __copy_from_user_ll_nocache_nozero(void *to, const void __user *fr
+@@ -827,65 +943,49 @@ unsigned long __copy_from_user_ll_nocache_nozero(void *to, const void __user *fr
  	if (n > 64 && cpu_has_xmm2)
  		n = __copy_user_intel_nocache(to, from, n);
  	else
@@ -25562,7 +25580,6 @@ index e218d5d..7d522b8 100644
 +	default:
 +		BUG();
 +	}
-+	return;
 +}
 +EXPORT_SYMBOL(__set_fs);
 +
@@ -27657,6 +27674,19 @@ index f6ff57b..481690f 100644
  				cattr_name(want_flags),
  				(unsigned long long)paddr,
  				(unsigned long long)(paddr + size),
+diff --git a/arch/x86/mm/pat_rbtree.c b/arch/x86/mm/pat_rbtree.c
+index 8acaddd..4eaa657 100644
+--- a/arch/x86/mm/pat_rbtree.c
++++ b/arch/x86/mm/pat_rbtree.c
+@@ -165,7 +165,7 @@ success:
+ 
+ failure:
+ 	printk(KERN_INFO "%s:%d conflicting memory types "
+-		"%Lx-%Lx %s<->%s\n", current->comm, current->pid, start,
++		"%Lx-%Lx %s<->%s\n", current->comm, task_pid_nr(current), start,
+ 		end, cattr_name(found_type), cattr_name(match->type));
+ 	return -EBUSY;
+ }
 diff --git a/arch/x86/mm/pf_in.c b/arch/x86/mm/pf_in.c
 index 9f0614d..92ae64a 100644
 --- a/arch/x86/mm/pf_in.c
@@ -29468,6 +29498,19 @@ index e529730..8d08690 100644
  	read_shdrs(fp);
  	read_strtabs(fp);
  	read_symtabs(fp);
+diff --git a/arch/x86/um/tls_32.c b/arch/x86/um/tls_32.c
+index c6c7131..2851e03 100644
+--- a/arch/x86/um/tls_32.c
++++ b/arch/x86/um/tls_32.c
+@@ -259,7 +259,7 @@ out:
+ 	if (unlikely(task == current &&
+ 		     !t->arch.tls_array[idx - GDT_ENTRY_TLS_MIN].flushed)) {
+ 		printk(KERN_ERR "get_tls_entry: task with pid %d got here "
+-				"without flushed TLS.", current->pid);
++				"without flushed TLS.", task_pid_nr(current));
+ 	}
+ 
+ 	return 0;
 diff --git a/arch/x86/vdso/Makefile b/arch/x86/vdso/Makefile
 index 5d17950..2253fc9 100644
 --- a/arch/x86/vdso/Makefile
@@ -30084,7 +30127,7 @@ index 7b72502..646105c 100644
  			err = -EFAULT;
  			goto out;
 diff --git a/block/genhd.c b/block/genhd.c
-index 6edf228..078f68b9 100644
+index 8bd4ef2..078f68b9 100644
 --- a/block/genhd.c
 +++ b/block/genhd.c
 @@ -474,21 +474,24 @@ static char *bdevt_str(dev_t devt, char *buf)
@@ -30115,15 +30158,6 @@ index 6edf228..078f68b9 100644
  }
  
  EXPORT_SYMBOL(blk_unregister_region);
-@@ -519,7 +522,7 @@ void register_disk(struct gendisk *disk)
- 
- 	ddev->parent = disk->driverfs_dev;
- 
--	dev_set_name(ddev, disk->disk_name);
-+	dev_set_name(ddev, "%s", disk->disk_name);
- 
- 	/* delay uevents, until we scanned partition table */
- 	dev_set_uevent_suppress(ddev, 1);
 diff --git a/block/scsi_ioctl.c b/block/scsi_ioctl.c
 index 9e76a32..48d7145 100644
 --- a/block/scsi_ioctl.c
@@ -30178,19 +30212,6 @@ index 9e76a32..48d7145 100644
 +
  	if (in_len && copy_from_user(buffer, sic->data + cmdlen, in_len))
  		goto error;
- 
-diff --git a/crypto/algapi.c b/crypto/algapi.c
-index 54dd4e3..27ea1b0 100644
---- a/crypto/algapi.c
-+++ b/crypto/algapi.c
-@@ -477,7 +477,7 @@ static struct crypto_template *__crypto_lookup_template(const char *name)
- 
- struct crypto_template *crypto_lookup_template(const char *name)
- {
--	return try_then_request_module(__crypto_lookup_template(name), name);
-+	return try_then_request_module(__crypto_lookup_template(name), "%s", name);
- }
- EXPORT_SYMBOL_GPL(crypto_lookup_template);
  
 diff --git a/crypto/cryptd.c b/crypto/cryptd.c
 index 7bdd61b..afec999 100644
@@ -30461,7 +30482,7 @@ index 240a244..bc6239e 100644
  static void delete_gpe_attr_array(void)
  {
 diff --git a/drivers/ata/libahci.c b/drivers/ata/libahci.c
-index 3c92dbd..008b08b 100644
+index 60def03..dcbb9ac 100644
 --- a/drivers/ata/libahci.c
 +++ b/drivers/ata/libahci.c
 @@ -1211,7 +1211,7 @@ int ahci_kick_engine(struct ata_port *ap)
@@ -32230,19 +32251,6 @@ index a365562..933bbbd 100644
  	set_fs(old_fs);
  	if (likely(bw == len))
  		return 0;
-diff --git a/drivers/block/nbd.c b/drivers/block/nbd.c
-index 40a0fcb..556767c 100644
---- a/drivers/block/nbd.c
-+++ b/drivers/block/nbd.c
-@@ -675,7 +675,7 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *lo,
- 
- 		mutex_unlock(&lo->tx_lock);
- 
--		thread = kthread_create(nbd_thread, lo, lo->disk->disk_name);
-+		thread = kthread_create(nbd_thread, lo, "%s", lo->disk->disk_name);
- 		if (IS_ERR(thread)) {
- 			mutex_lock(&lo->tx_lock);
- 			return PTR_ERR(thread);
 diff --git a/drivers/block/pktcdvd.c b/drivers/block/pktcdvd.c
 index a63b0a2..30228d1 100644
 --- a/drivers/block/pktcdvd.c
@@ -32257,7 +32265,7 @@ index a63b0a2..30228d1 100644
  static DEFINE_MUTEX(pktcdvd_mutex);
  static struct pktcdvd_device *pkt_devs[MAX_WRITERS];
 diff --git a/drivers/cdrom/cdrom.c b/drivers/cdrom/cdrom.c
-index 2678b6f..a691234 100644
+index 1331740..a691234 100644
 --- a/drivers/cdrom/cdrom.c
 +++ b/drivers/cdrom/cdrom.c
 @@ -419,7 +419,6 @@ int register_cdrom(struct cdrom_device_info *cdi)
@@ -32298,15 +32306,6 @@ index 2678b6f..a691234 100644
 +		cgc.buffer = kzalloc(CD_FRAMESIZE_RAW * nr, GFP_KERNEL);
  		if (cgc.buffer)
  			break;
- 
-@@ -2885,7 +2886,7 @@ static noinline int mmc_ioctl_cdrom_read_data(struct cdrom_device_info *cdi,
- 	if (lba < 0)
- 		return -EINVAL;
- 
--	cgc->buffer = kmalloc(blocksize, GFP_KERNEL);
-+	cgc->buffer = kzalloc(blocksize, GFP_KERNEL);
- 	if (cgc->buffer == NULL)
- 		return -ENOMEM;
  
 @@ -3432,7 +3433,7 @@ static int cdrom_print_info(const char *header, int val, char *info,
  	struct cdrom_device_info *cdi;
@@ -35178,7 +35177,7 @@ index e8422ae..d22d4a8 100644
  	DRM_DEBUG("pid=%d\n", DRM_CURRENTPID);
  
 diff --git a/drivers/gpu/drm/radeon/radeon_ttm.c b/drivers/gpu/drm/radeon/radeon_ttm.c
-index 0b5468b..7ecf242 100644
+index 0b5468b..74cfb87 100644
 --- a/drivers/gpu/drm/radeon/radeon_ttm.c
 +++ b/drivers/gpu/drm/radeon/radeon_ttm.c
 @@ -631,7 +631,7 @@ void radeon_ttm_set_active_vram_size(struct radeon_device *rdev, u64 size)
@@ -35201,37 +35200,51 @@ index 0b5468b..7ecf242 100644
  	}
  	vma->vm_ops = &radeon_ttm_vm_ops;
  	return 0;
-@@ -829,21 +831,24 @@ static int radeon_ttm_debugfs_init(struct radeon_device *rdev)
- 			sprintf(radeon_mem_types_names[i], "radeon_vram_mm");
- 		else
- 			sprintf(radeon_mem_types_names[i], "radeon_gtt_mm");
+@@ -820,30 +822,25 @@ static int radeon_mm_dump_table(struct seq_file *m, void *data)
+ static int radeon_ttm_debugfs_init(struct radeon_device *rdev)
+ {
+ #if defined(CONFIG_DEBUG_FS)
+-	static struct drm_info_list radeon_mem_types_list[RADEON_DEBUGFS_MEM_TYPES+1];
+-	static char radeon_mem_types_names[RADEON_DEBUGFS_MEM_TYPES+1][32];
+-	unsigned i;
++	static struct drm_info_list radeon_mem_types_list[RADEON_DEBUGFS_MEM_TYPES+1] = {
++		{
++			.name = "radeon_vram_mm",
++			.show = &radeon_mm_dump_table,
++		},
++		{
++			.name = "radeon_gtt_mm",
++			.show = &radeon_mm_dump_table,
++		},
++		{
++			.name = "ttm_page_pool",
++			.show = &ttm_page_alloc_debugfs,
++		},
++	};
+ 
+-	for (i = 0; i < RADEON_DEBUGFS_MEM_TYPES; i++) {
+-		if (i == 0)
+-			sprintf(radeon_mem_types_names[i], "radeon_vram_mm");
+-		else
+-			sprintf(radeon_mem_types_names[i], "radeon_gtt_mm");
 -		radeon_mem_types_list[i].name = radeon_mem_types_names[i];
 -		radeon_mem_types_list[i].show = &radeon_mm_dump_table;
 -		radeon_mem_types_list[i].driver_features = 0;
-+		pax_open_kernel();
-+		*(const char **)&radeon_mem_types_list[i].name = radeon_mem_types_names[i];
-+		*(void **)&radeon_mem_types_list[i].show = &radeon_mm_dump_table;
-+		*(u32 *)&radeon_mem_types_list[i].driver_features = 0;
- 		if (i == 0)
+-		if (i == 0)
 -			radeon_mem_types_list[i].data = rdev->mman.bdev.man[TTM_PL_VRAM].priv;
-+			*(void **)&radeon_mem_types_list[i].data = rdev->mman.bdev.man[TTM_PL_VRAM].priv;
- 		else
+-		else
 -			radeon_mem_types_list[i].data = rdev->mman.bdev.man[TTM_PL_TT].priv;
 -
-+			*(void **)&radeon_mem_types_list[i].data = rdev->mman.bdev.man[TTM_PL_TT].priv;
-+		pax_close_kernel();
- 	}
- 	/* Add ttm page pool to debugfs */
- 	sprintf(radeon_mem_types_names[i], "ttm_page_pool");
+-	}
+-	/* Add ttm page pool to debugfs */
+-	sprintf(radeon_mem_types_names[i], "ttm_page_pool");
 -	radeon_mem_types_list[i].name = radeon_mem_types_names[i];
 -	radeon_mem_types_list[i].show = &ttm_page_alloc_debugfs;
 -	radeon_mem_types_list[i].driver_features = 0;
 -	radeon_mem_types_list[i].data = NULL;
 +	pax_open_kernel();
-+	*(const char **)&radeon_mem_types_list[i].name = radeon_mem_types_names[i];
-+	*(void **)&radeon_mem_types_list[i].show = &ttm_page_alloc_debugfs;
-+	*(u32 *)&radeon_mem_types_list[i].driver_features = 0;
-+	*(void **)&radeon_mem_types_list[i++].data = NULL;
++	*(void **)&radeon_mem_types_list[0].data = rdev->mman.bdev.man[TTM_PL_VRAM].priv;
++	*(void **)&radeon_mem_types_list[1].data = rdev->mman.bdev.man[TTM_PL_TT].priv;
 +	pax_close_kernel();
  	return radeon_debugfs_add_files(rdev, radeon_mem_types_list, RADEON_DEBUGFS_MEM_TYPES+1);
  
@@ -35589,7 +35602,7 @@ index 0aee112..b72d21f 100644
  	/*
  	 * Represents channel interrupts. Each bit position represents a
 diff --git a/drivers/hv/vmbus_drv.c b/drivers/hv/vmbus_drv.c
-index d2d0a2a..90b8f4d 100644
+index 44442d5..9f4b007 100644
 --- a/drivers/hv/vmbus_drv.c
 +++ b/drivers/hv/vmbus_drv.c
 @@ -663,10 +663,10 @@ int vmbus_device_register(struct hv_device *child_device_obj)
@@ -39914,7 +39927,7 @@ index 49b549f..13d648c 100644
  
  	mac->phydev = phydev;
 diff --git a/drivers/net/ethernet/realtek/r8169.c b/drivers/net/ethernet/realtek/r8169.c
-index ed7a5a6..606fc45 100644
+index a3bd0ba..8a34a90 100644
 --- a/drivers/net/ethernet/realtek/r8169.c
 +++ b/drivers/net/ethernet/realtek/r8169.c
 @@ -704,17 +704,17 @@ struct rtl8169_private {
@@ -40430,62 +40443,6 @@ index e662cbc..8d4a102 100644
  			return -EINVAL;
  	}
  
-diff --git a/drivers/net/wan/dlci.c b/drivers/net/wan/dlci.c
-index 48ab38a..02c939e 100644
---- a/drivers/net/wan/dlci.c
-+++ b/drivers/net/wan/dlci.c
-@@ -385,21 +385,37 @@ static int dlci_del(struct dlci_add *dlci)
- 	struct frad_local	*flp;
- 	struct net_device	*master, *slave;
- 	int			err;
-+	bool			found = false;
-+
-+	rtnl_lock();
- 
- 	/* validate slave device */
- 	master = __dev_get_by_name(&init_net, dlci->devname);
--	if (!master)
--		return -ENODEV;
-+	if (!master) {
-+		err = -ENODEV;
-+		goto out;
-+	}
-+
-+	list_for_each_entry(dlp, &dlci_devs, list) {
-+		if (dlp->master == master) {
-+			found = true;
-+			break;
-+		}
-+	}
-+	if (!found) {
-+		err = -ENODEV;
-+		goto out;
-+	}
- 
- 	if (netif_running(master)) {
--		return -EBUSY;
-+		err = -EBUSY;
-+		goto out;
- 	}
- 
- 	dlp = netdev_priv(master);
- 	slave = dlp->slave;
- 	flp = netdev_priv(slave);
- 
--	rtnl_lock();
- 	err = (*flp->deassoc)(slave, master);
- 	if (!err) {
- 		list_del(&dlp->list);
-@@ -408,8 +424,8 @@ static int dlci_del(struct dlci_add *dlci)
- 
- 		dev_put(slave);
- 	}
-+out:
- 	rtnl_unlock();
--
- 	return err;
- }
- 
 diff --git a/drivers/net/wireless/at76c50x-usb.c b/drivers/net/wireless/at76c50x-usb.c
 index 4045e5a..506f1cf 100644
 --- a/drivers/net/wireless/at76c50x-usb.c
@@ -40726,10 +40683,10 @@ index f5ae3c6..7936af3 100644
  
  static u16 ar9003_calc_ptr_chksum(struct ar9003_txc *ads)
 diff --git a/drivers/net/wireless/ath/ath9k/hw.h b/drivers/net/wireless/ath/ath9k/hw.h
-index 0c65a09..313fb6d 100644
+index dc774cd..fd6efed 100644
 --- a/drivers/net/wireless/ath/ath9k/hw.h
 +++ b/drivers/net/wireless/ath/ath9k/hw.h
-@@ -606,7 +606,7 @@ struct ath_hw_private_ops {
+@@ -607,7 +607,7 @@ struct ath_hw_private_ops {
  
  	/* ANI */
  	void (*ani_cache_ini_regs)(struct ath_hw *ah);
@@ -40738,7 +40695,7 @@ index 0c65a09..313fb6d 100644
  
  /**
   * struct ath_hw_ops - callbacks used by hardware code and driver code
-@@ -636,7 +636,7 @@ struct ath_hw_ops {
+@@ -637,7 +637,7 @@ struct ath_hw_ops {
  	void (*antdiv_comb_conf_set)(struct ath_hw *ah,
  			struct ath_hw_antcomb_conf *antconf);
  
@@ -49150,10 +49107,10 @@ index 4fc4dbb..bae9dce 100644
  	__bio_for_each_segment(bvec, bio, i, 0) {
  		char *addr = page_address(bvec->bv_page);
 diff --git a/fs/block_dev.c b/fs/block_dev.c
-index 53ab273..25649b6 100644
+index c103267..260cbd9 100644
 --- a/fs/block_dev.c
 +++ b/fs/block_dev.c
-@@ -683,7 +683,7 @@ static bool bd_may_claim(struct block_device *bdev, struct block_device *whole,
+@@ -690,7 +690,7 @@ static bool bd_may_claim(struct block_device *bdev, struct block_device *whole,
  	else if (bdev->bd_contains == bdev)
  		return true;  	 /* is a whole device which isn't held */
  
@@ -49268,6 +49225,19 @@ index 200f63b..490b833 100644
  
  /*
   * used by btrfsctl to scan devices when no FS is mounted
+diff --git a/fs/buffer.c b/fs/buffer.c
+index 19a4f0b..6638f5c 100644
+--- a/fs/buffer.c
++++ b/fs/buffer.c
+@@ -3314,7 +3314,7 @@ void __init buffer_init(void)
+ 	bh_cachep = kmem_cache_create("buffer_head",
+ 			sizeof(struct buffer_head), 0,
+ 				(SLAB_RECLAIM_ACCOUNT|SLAB_PANIC|
+-				SLAB_MEM_SPREAD),
++				SLAB_MEM_SPREAD|SLAB_NO_SANITIZE),
+ 				NULL);
+ 
+ 	/*
 diff --git a/fs/cachefiles/bind.c b/fs/cachefiles/bind.c
 index 622f469..e8d2d55 100644
 --- a/fs/cachefiles/bind.c
@@ -49445,10 +49415,10 @@ index 9895400..78a67e7 100644
  	}
  
 diff --git a/fs/ceph/super.c b/fs/ceph/super.c
-index b48f15f..9fe4eab 100644
+index de268a8..06e0541 100644
 --- a/fs/ceph/super.c
 +++ b/fs/ceph/super.c
-@@ -896,6 +896,7 @@ static struct file_system_type ceph_fs_type = {
+@@ -901,6 +901,7 @@ static struct file_system_type ceph_fs_type = {
  	.kill_sb	= ceph_kill_sb,
  	.fs_flags	= FS_RENAME_DOES_D_MOVE,
  };
@@ -50072,7 +50042,7 @@ index 739fb59..5385976 100644
  static int __init init_cramfs_fs(void)
  {
 diff --git a/fs/dcache.c b/fs/dcache.c
-index d322929..ff57049 100644
+index d322929..9f4b816 100644
 --- a/fs/dcache.c
 +++ b/fs/dcache.c
 @@ -103,11 +103,11 @@ static unsigned int d_hash_shift __read_mostly;
@@ -50091,12 +50061,13 @@ index d322929..ff57049 100644
  	return dentry_hashtable + (hash & D_HASHMASK);
  }
  
-@@ -3057,7 +3057,7 @@ void __init vfs_caches_init(unsigned long mempages)
+@@ -3057,7 +3057,8 @@ void __init vfs_caches_init(unsigned long mempages)
  	mempages -= reserve;
  
  	names_cachep = kmem_cache_create("names_cache", PATH_MAX, 0,
 -			SLAB_HWCACHE_ALIGN|SLAB_PANIC, NULL);
-+			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_USERCOPY, NULL);
++			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_USERCOPY|
++			SLAB_NO_SANITIZE, NULL);
  
  	dcache_init();
  	inode_init();
@@ -50229,7 +50200,7 @@ index 451b9b8..12e5a03 100644
  
  out_free_fd:
 diff --git a/fs/exec.c b/fs/exec.c
-index 312e297..4df82cf 100644
+index a2d0e51..25c839c 100644
 --- a/fs/exec.c
 +++ b/fs/exec.c
 @@ -55,12 +55,35 @@
@@ -50526,7 +50497,7 @@ index 312e297..4df82cf 100644
 +
 +#ifdef CONFIG_X86
 +		if (!ret) {
-+			size = mmap_min_addr + ((mm->delta_mmap ^ mm->delta_stack) & (0xFFUL << PAGE_SHIFT));
++			size = PAGE_SIZE + mmap_min_addr + ((mm->delta_mmap ^ mm->delta_stack) & (0xFFUL << PAGE_SHIFT));
 +			ret = 0 != mmap_region(NULL, 0, PAGE_ALIGN(size), flags, vm_flags, 0);
 +		}
 +#endif
@@ -50616,37 +50587,7 @@ index 312e297..4df82cf 100644
  
  	/* Set the new mm task size. We have to do that late because it may
  	 * depend on TIF_32BIT which is only updated in flush_thread() on
-@@ -1159,13 +1238,6 @@ void setup_new_exec(struct linux_binprm * bprm)
- 			set_dumpable(current->mm, suid_dumpable);
- 	}
- 
--	/*
--	 * Flush performance counters when crossing a
--	 * security domain:
--	 */
--	if (!get_dumpable(current->mm))
--		perf_event_exit_task(current);
--
- 	/* An exec changes our domain. We are no longer part of the thread
- 	   group */
- 
-@@ -1229,6 +1301,15 @@ void install_exec_creds(struct linux_binprm *bprm)
- 
- 	commit_creds(bprm->cred);
- 	bprm->cred = NULL;
-+
-+	/*
-+	 * Disable monitoring for regular users
-+	 * when executing setuid binaries. Must
-+	 * wait until new credentials are committed
-+	 * by commit_creds() above
-+	 */
-+	if (get_dumpable(current->mm) != SUID_DUMP_USER)
-+		perf_event_exit_task(current);
- 	/*
- 	 * cred_guard_mutex must be held at least to this point to prevent
- 	 * ptrace_attach() from altering our determination of the task's
-@@ -1266,7 +1347,7 @@ int check_unsafe_exec(struct linux_binprm *bprm)
+@@ -1268,7 +1347,7 @@ int check_unsafe_exec(struct linux_binprm *bprm)
  	}
  	rcu_read_unlock();
  
@@ -50655,7 +50596,7 @@ index 312e297..4df82cf 100644
  		bprm->unsafe |= LSM_UNSAFE_SHARE;
  	} else {
  		res = -EAGAIN;
-@@ -1461,6 +1542,31 @@ int search_binary_handler(struct linux_binprm *bprm,struct pt_regs *regs)
+@@ -1463,6 +1542,31 @@ int search_binary_handler(struct linux_binprm *bprm,struct pt_regs *regs)
  
  EXPORT_SYMBOL(search_binary_handler);
  
@@ -50687,7 +50628,7 @@ index 312e297..4df82cf 100644
  /*
   * sys_execve() executes a new program.
   */
-@@ -1469,6 +1575,11 @@ static int do_execve_common(const char *filename,
+@@ -1471,6 +1575,11 @@ static int do_execve_common(const char *filename,
  				struct user_arg_ptr envp,
  				struct pt_regs *regs)
  {
@@ -50699,7 +50640,7 @@ index 312e297..4df82cf 100644
  	struct linux_binprm *bprm;
  	struct file *file;
  	struct files_struct *displaced;
-@@ -1476,6 +1587,8 @@ static int do_execve_common(const char *filename,
+@@ -1478,6 +1587,8 @@ static int do_execve_common(const char *filename,
  	int retval;
  	const struct cred *cred = current_cred();
  
@@ -50708,7 +50649,7 @@ index 312e297..4df82cf 100644
  	/*
  	 * We move the actual failure in case of RLIMIT_NPROC excess from
  	 * set*uid() to execve() because too many poorly written programs
-@@ -1516,12 +1629,22 @@ static int do_execve_common(const char *filename,
+@@ -1518,12 +1629,22 @@ static int do_execve_common(const char *filename,
  	if (IS_ERR(file))
  		goto out_unmark;
  
@@ -50731,7 +50672,7 @@ index 312e297..4df82cf 100644
  	retval = bprm_mm_init(bprm);
  	if (retval)
  		goto out_file;
-@@ -1538,24 +1661,70 @@ static int do_execve_common(const char *filename,
+@@ -1540,24 +1661,70 @@ static int do_execve_common(const char *filename,
  	if (retval < 0)
  		goto out;
  
@@ -50806,7 +50747,7 @@ index 312e297..4df82cf 100644
  	current->fs->in_exec = 0;
  	current->in_execve = 0;
  	acct_update_integrals(current);
-@@ -1564,6 +1733,14 @@ static int do_execve_common(const char *filename,
+@@ -1566,6 +1733,14 @@ static int do_execve_common(const char *filename,
  		put_files_struct(displaced);
  	return retval;
  
@@ -50821,7 +50762,7 @@ index 312e297..4df82cf 100644
  out:
  	if (bprm->mm) {
  		acct_arg_size(bprm, 0);
-@@ -1637,7 +1814,7 @@ static int expand_corename(struct core_name *cn)
+@@ -1639,7 +1814,7 @@ static int expand_corename(struct core_name *cn)
  {
  	char *old_corename = cn->corename;
  
@@ -50830,7 +50771,7 @@ index 312e297..4df82cf 100644
  	cn->corename = krealloc(old_corename, cn->size, GFP_KERNEL);
  
  	if (!cn->corename) {
-@@ -1734,7 +1911,7 @@ static int format_corename(struct core_name *cn, long signr)
+@@ -1736,7 +1911,7 @@ static int format_corename(struct core_name *cn, long signr)
  	int pid_in_pattern = 0;
  	int err = 0;
  
@@ -50839,7 +50780,7 @@ index 312e297..4df82cf 100644
  	cn->corename = kmalloc(cn->size, GFP_KERNEL);
  	cn->used = 0;
  
-@@ -1831,6 +2008,280 @@ out:
+@@ -1833,6 +2008,280 @@ out:
  	return ispipe;
  }
  
@@ -51120,7 +51061,7 @@ index 312e297..4df82cf 100644
  static int zap_process(struct task_struct *start, int exit_code)
  {
  	struct task_struct *t;
-@@ -2004,17 +2455,17 @@ static void coredump_finish(struct mm_struct *mm)
+@@ -2006,17 +2455,17 @@ static void coredump_finish(struct mm_struct *mm)
  void set_dumpable(struct mm_struct *mm, int value)
  {
  	switch (value) {
@@ -51141,7 +51082,7 @@ index 312e297..4df82cf 100644
  		set_bit(MMF_DUMP_SECURELY, &mm->flags);
  		smp_wmb();
  		set_bit(MMF_DUMPABLE, &mm->flags);
-@@ -2027,7 +2478,7 @@ static int __get_dumpable(unsigned long mm_flags)
+@@ -2029,7 +2478,7 @@ static int __get_dumpable(unsigned long mm_flags)
  	int ret;
  
  	ret = mm_flags & MMF_DUMPABLE_MASK;
@@ -51150,7 +51091,7 @@ index 312e297..4df82cf 100644
  }
  
  int get_dumpable(struct mm_struct *mm)
-@@ -2042,17 +2493,17 @@ static void wait_for_dump_helpers(struct file *file)
+@@ -2044,17 +2493,17 @@ static void wait_for_dump_helpers(struct file *file)
  	pipe = file->f_path.dentry->d_inode->i_pipe;
  
  	pipe_lock(pipe);
@@ -51173,7 +51114,7 @@ index 312e297..4df82cf 100644
  	pipe_unlock(pipe);
  
  }
-@@ -2113,7 +2564,8 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
+@@ -2115,7 +2564,8 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
  	int retval = 0;
  	int flag = 0;
  	int ispipe;
@@ -51183,7 +51124,7 @@ index 312e297..4df82cf 100644
  	struct coredump_params cprm = {
  		.signr = signr,
  		.regs = regs,
-@@ -2128,6 +2580,9 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
+@@ -2130,6 +2580,9 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
  
  	audit_core_dumps(signr);
  
@@ -51193,7 +51134,7 @@ index 312e297..4df82cf 100644
  	binfmt = mm->binfmt;
  	if (!binfmt || !binfmt->core_dump)
  		goto fail;
-@@ -2138,14 +2593,16 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
+@@ -2140,14 +2593,16 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
  	if (!cred)
  		goto fail;
  	/*
@@ -51214,7 +51155,7 @@ index 312e297..4df82cf 100644
  	}
  
  	retval = coredump_wait(exit_code, &core_state);
-@@ -2195,7 +2652,7 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
+@@ -2197,7 +2652,7 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
  		}
  		cprm.limit = RLIM_INFINITY;
  
@@ -51223,7 +51164,7 @@ index 312e297..4df82cf 100644
  		if (core_pipe_limit && (core_pipe_limit < dump_count)) {
  			printk(KERN_WARNING "Pid %d(%s) over core_pipe_limit\n",
  			       task_tgid_vnr(current), current->comm);
-@@ -2222,9 +2679,19 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
+@@ -2224,9 +2679,19 @@ void do_coredump(long signr, int exit_code, struct pt_regs *regs)
  	} else {
  		struct inode *inode;
  
@@ -51243,7 +51184,7 @@ index 312e297..4df82cf 100644
  		cprm.file = filp_open(cn.corename,
  				 O_CREAT | 2 | O_NOFOLLOW | O_LARGEFILE | flag,
  				 0600);
-@@ -2265,7 +2732,7 @@ close_fail:
+@@ -2267,7 +2732,7 @@ close_fail:
  		filp_close(cprm.file, NULL);
  fail_dropcount:
  	if (ispipe)
@@ -51252,7 +51193,7 @@ index 312e297..4df82cf 100644
  fail_unlock:
  	kfree(cn.corename);
  fail_corename:
-@@ -2284,7 +2751,7 @@ fail:
+@@ -2286,7 +2751,7 @@ fail:
   */
  int dump_write(struct file *file, const void *addr, int nr)
  {
@@ -53343,10 +53284,10 @@ index 2f72da5..7ee87b1 100644
  static int __init init_hostfs(void)
  {
 diff --git a/fs/hpfs/super.c b/fs/hpfs/super.c
-index 98580a3..c95accd 100644
+index f760c15..61b7191 100644
 --- a/fs/hpfs/super.c
 +++ b/fs/hpfs/super.c
-@@ -685,6 +685,7 @@ static struct file_system_type hpfs_fs_type = {
+@@ -691,6 +691,7 @@ static struct file_system_type hpfs_fs_type = {
  	.kill_sb	= kill_block_super,
  	.fs_flags	= FS_REQUIRES_DEV,
  };
@@ -54499,7 +54440,7 @@ index e065497..258fa11 100644
  static struct nfsd4_operation nfsd4_ops[];
  
 diff --git a/fs/nfsd/nfs4xdr.c b/fs/nfsd/nfs4xdr.c
-index ade5316..f1a6152 100644
+index 99625b8..7e04dea 100644
 --- a/fs/nfsd/nfs4xdr.c
 +++ b/fs/nfsd/nfs4xdr.c
 @@ -1445,7 +1445,7 @@ nfsd4_decode_notsupp(struct nfsd4_compoundargs *argp, void *p)
@@ -57222,6 +57163,63 @@ index 7b21801..ee8fe9b 100644
  
  	generic_fillattr(inode, stat);
  	return 0;
+diff --git a/fs/super.c b/fs/super.c
+index 2a698f6..056eff7 100644
+--- a/fs/super.c
++++ b/fs/super.c
+@@ -295,19 +295,19 @@ EXPORT_SYMBOL(deactivate_super);
+  *	and want to turn it into a full-blown active reference.  grab_super()
+  *	is called with sb_lock held and drops it.  Returns 1 in case of
+  *	success, 0 if we had failed (superblock contents was already dead or
+- *	dying when grab_super() had been called).
++ *	dying when grab_super() had been called).  Note that this is only
++ *	called for superblocks not in rundown mode (== ones still on ->fs_supers
++ *	of their type), so increment of ->s_count is OK here.
+  */
+ static int grab_super(struct super_block *s) __releases(sb_lock)
+ {
+-	if (atomic_inc_not_zero(&s->s_active)) {
+-		spin_unlock(&sb_lock);
+-		return 1;
+-	}
+-	/* it's going away */
+ 	s->s_count++;
+ 	spin_unlock(&sb_lock);
+-	/* wait for it to die */
+ 	down_write(&s->s_umount);
++	if ((s->s_flags & MS_BORN) && atomic_inc_not_zero(&s->s_active)) {
++		put_super(s);
++		return 1;
++	}
+ 	up_write(&s->s_umount);
+ 	put_super(s);
+ 	return 0;
+@@ -436,11 +436,6 @@ retry:
+ 				destroy_super(s);
+ 				s = NULL;
+ 			}
+-			down_write(&old->s_umount);
+-			if (unlikely(!(old->s_flags & MS_BORN))) {
+-				deactivate_locked_super(old);
+-				goto retry;
+-			}
+ 			return old;
+ 		}
+ 	}
+@@ -650,10 +645,10 @@ restart:
+ 		if (list_empty(&sb->s_instances))
+ 			continue;
+ 		if (sb->s_bdev == bdev) {
+-			if (grab_super(sb)) /* drops sb_lock */
+-				return sb;
+-			else
++			if (!grab_super(sb))
+ 				goto restart;
++			up_write(&sb->s_umount);
++			return sb;
+ 		}
+ 	}
+ 	spin_unlock(&sb_lock);
 diff --git a/fs/sysfs/bin.c b/fs/sysfs/bin.c
 index a475983..3aab767 100644
 --- a/fs/sysfs/bin.c
@@ -57368,70 +57366,6 @@ index bb55cdb..e9ebb8a 100644
  {
  	if (sbi->s_bytesex == BYTESEX_PDP)
  		return PDP_swab((__force __u32)n);
-diff --git a/fs/ubifs/dir.c b/fs/ubifs/dir.c
-index 6834920..6b0cc3e 100644
---- a/fs/ubifs/dir.c
-+++ b/fs/ubifs/dir.c
-@@ -372,6 +372,24 @@ static int ubifs_readdir(struct file *file, void *dirent, filldir_t filldir)
- 		 */
- 		return 0;
- 
-+	if (file->f_version == 0) {
-+		/*
-+		 * The file was seek'ed, which means that @file->private_data
-+		 * is now invalid. This may also be just the first
-+		 * 'ubifs_readdir()' invocation, in which case
-+		 * @file->private_data is NULL, and the below code is
-+		 * basically a no-op.
-+		 */
-+		kfree(file->private_data);
-+		file->private_data = NULL;
-+	}
-+
-+	/*
-+	 * 'generic_file_llseek()' unconditionally sets @file->f_version to
-+	 * zero, and we use this for detecting whether the file was seek'ed.
-+	 */
-+	file->f_version = 1;
-+
- 	/* File positions 0 and 1 correspond to "." and ".." */
- 	if (file->f_pos == 0) {
- 		ubifs_assert(!file->private_data);
-@@ -446,6 +464,14 @@ static int ubifs_readdir(struct file *file, void *dirent, filldir_t filldir)
- 		file->f_pos = key_hash_flash(c, &dent->key);
- 		file->private_data = dent;
- 		cond_resched();
-+
-+		if (file->f_version == 0)
-+			/*
-+			 * The file was seek'ed meanwhile, lets return and start
-+			 * reading direntries from the new position on the next
-+			 * invocation.
-+			 */
-+			return 0;
- 	}
- 
- out:
-@@ -456,16 +482,14 @@ out:
- 
- 	kfree(file->private_data);
- 	file->private_data = NULL;
-+	/* 2 is a special value indicating that there are no more direntries */
- 	file->f_pos = 2;
- 	return 0;
- }
- 
--/* If a directory is seeked, we have to free saved readdir() state */
--static loff_t ubifs_dir_llseek(struct file *file, loff_t offset, int origin)
-+static loff_t ubifs_dir_llseek(struct file *file, loff_t offset, int whence)
- {
--	kfree(file->private_data);
--	file->private_data = NULL;
--	return generic_file_llseek(file, offset, origin);
-+	return generic_file_llseek(file, offset, whence);
- }
- 
- /* Free saved readdir() state when the directory is closed */
 diff --git a/fs/ubifs/io.c b/fs/ubifs/io.c
 index 9228950..bbad895 100644
 --- a/fs/ubifs/io.c
@@ -71976,7 +71910,7 @@ index 45fc162..01a4068 100644
  /**
   * struct hotplug_slot_info - used to notify the hotplug pci core of the state of the slot
 diff --git a/include/linux/perf_event.h b/include/linux/perf_event.h
-index 9b9b2aa..df3199e 100644
+index 3cfcfea..0227030 100644
 --- a/include/linux/perf_event.h
 +++ b/include/linux/perf_event.h
 @@ -748,8 +748,8 @@ struct perf_event {
@@ -72001,7 +71935,7 @@ index 9b9b2aa..df3199e 100644
  
  	/*
  	 * Protect attach/detach and child_list:
-@@ -1101,7 +1101,7 @@ static inline void perf_callchain_store(struct perf_callchain_entry *entry, u64
+@@ -1100,7 +1100,7 @@ static inline void perf_callchain_store(struct perf_callchain_entry *entry, u64
  		entry->ip[entry->nr++] = ip;
  }
  
@@ -72010,7 +71944,7 @@ index 9b9b2aa..df3199e 100644
  extern int sysctl_perf_event_mlock;
  extern int sysctl_perf_event_sample_rate;
  
-@@ -1109,19 +1109,24 @@ extern int perf_proc_update_handler(struct ctl_table *table, int write,
+@@ -1108,19 +1108,24 @@ extern int perf_proc_update_handler(struct ctl_table *table, int write,
  		void __user *buffer, size_t *lenp,
  		loff_t *ppos);
  
@@ -72038,7 +71972,7 @@ index 9b9b2aa..df3199e 100644
  }
  
  extern void perf_event_init(void);
-@@ -1199,7 +1204,7 @@ static inline void perf_restore_debug_store(void)			{ }
+@@ -1198,7 +1203,7 @@ static inline void perf_restore_debug_store(void)			{ }
   */
  #define perf_cpu_notifier(fn)						\
  do {									\
@@ -72846,10 +72780,10 @@ index efe50af..0d0b145 100644
  
  static inline void nf_reset_trace(struct sk_buff *skb)
 diff --git a/include/linux/slab.h b/include/linux/slab.h
-index 573c809..c643b82 100644
+index 573c809..d82a501 100644
 --- a/include/linux/slab.h
 +++ b/include/linux/slab.h
-@@ -11,12 +11,20 @@
+@@ -11,14 +11,29 @@
  
  #include <linux/gfp.h>
  #include <linux/types.h>
@@ -72869,8 +72803,17 @@ index 573c809..c643b82 100644
 +
  #define SLAB_RED_ZONE		0x00000400UL	/* DEBUG: Red zone objs in a cache */
  #define SLAB_POISON		0x00000800UL	/* DEBUG: Poison objects */
++
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++#define SLAB_NO_SANITIZE	0x00001000UL	/* PaX: Do not sanitize objs on free */
++#else
++#define SLAB_NO_SANITIZE	0x00000000UL
++#endif
++
  #define SLAB_HWCACHE_ALIGN	0x00002000UL	/* Align objs on cache lines */
-@@ -87,10 +95,13 @@
+ #define SLAB_CACHE_DMA		0x00004000UL	/* Use GFP_DMA memory */
+ #define SLAB_STORE_USER		0x00010000UL	/* DEBUG: Store the last owner for bug hunting */
+@@ -87,10 +102,22 @@
   * ZERO_SIZE_PTR can be passed to kfree though in the same way that NULL can.
   * Both make kfree a no-op.
   */
@@ -72884,10 +72827,19 @@ index 573c809..c643b82 100644
 -#define ZERO_OR_NULL_PTR(x) ((unsigned long)(x) <= \
 -				(unsigned long)ZERO_SIZE_PTR)
 +#define ZERO_OR_NULL_PTR(x) ((unsigned long)(x) - 1 >= (unsigned long)ZERO_SIZE_PTR - 1)
++
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++#ifdef CONFIG_X86_64
++#define PAX_MEMORY_SANITIZE_VALUE	'\xfe'
++#else
++#define PAX_MEMORY_SANITIZE_VALUE	'\xff'
++#endif
++extern bool pax_sanitize_slab;
++#endif
  
  /*
   * struct kmem_cache related prototypes
-@@ -161,6 +172,8 @@ void * __must_check krealloc(const void *, size_t, gfp_t);
+@@ -161,6 +188,8 @@ void * __must_check krealloc(const void *, size_t, gfp_t);
  void kfree(const void *);
  void kzfree(const void *);
  size_t ksize(const void *);
@@ -72896,7 +72848,7 @@ index 573c809..c643b82 100644
  
  /*
   * Allocator specific definitions. These are mainly used to establish optimized
-@@ -242,7 +255,7 @@ size_t ksize(const void *);
+@@ -242,7 +271,7 @@ size_t ksize(const void *);
   */
  static inline void *kcalloc(size_t n, size_t size, gfp_t flags)
  {
@@ -72905,7 +72857,7 @@ index 573c809..c643b82 100644
  		return NULL;
  	return __kmalloc(n * size, flags | __GFP_ZERO);
  }
-@@ -287,7 +300,7 @@ static inline void *kmem_cache_alloc_node(struct kmem_cache *cachep,
+@@ -287,7 +316,7 @@ static inline void *kmem_cache_alloc_node(struct kmem_cache *cachep,
   */
  #if defined(CONFIG_DEBUG_SLAB) || defined(CONFIG_SLUB) || \
  	(defined(CONFIG_SLAB) && defined(CONFIG_TRACING))
@@ -72914,7 +72866,7 @@ index 573c809..c643b82 100644
  #define kmalloc_track_caller(size, flags) \
  	__kmalloc_track_caller(size, flags, _RET_IP_)
  #else
-@@ -306,7 +319,7 @@ extern void *__kmalloc_track_caller(size_t, gfp_t, unsigned long);
+@@ -306,7 +335,7 @@ extern void *__kmalloc_track_caller(size_t, gfp_t, unsigned long);
   */
  #if defined(CONFIG_DEBUG_SLAB) || defined(CONFIG_SLUB) || \
  	(defined(CONFIG_SLAB) && defined(CONFIG_TRACING))
@@ -72924,10 +72876,10 @@ index 573c809..c643b82 100644
  	__kmalloc_node_track_caller(size, flags, node, \
  			_RET_IP_)
 diff --git a/include/linux/slab_def.h b/include/linux/slab_def.h
-index d00e0ba..ce1f90b 100644
+index d00e0ba..a443aff 100644
 --- a/include/linux/slab_def.h
 +++ b/include/linux/slab_def.h
-@@ -68,10 +68,10 @@ struct kmem_cache {
+@@ -68,10 +68,14 @@ struct kmem_cache {
  	unsigned long node_allocs;
  	unsigned long node_frees;
  	unsigned long node_overflow;
@@ -72939,10 +72891,14 @@ index d00e0ba..ce1f90b 100644
 +	atomic_unchecked_t allocmiss;
 +	atomic_unchecked_t freehit;
 +	atomic_unchecked_t freemiss;
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++	atomic_unchecked_t sanitized;
++	atomic_unchecked_t not_sanitized;
++#endif
  
  	/*
  	 * If debugging is enabled, then the allocator can add additional
-@@ -105,11 +105,16 @@ struct cache_sizes {
+@@ -105,11 +109,16 @@ struct cache_sizes {
  #ifdef CONFIG_ZONE_DMA
  	struct kmem_cache	*cs_dmacachep;
  #endif
@@ -72960,7 +72916,7 @@ index d00e0ba..ce1f90b 100644
  
  #ifdef CONFIG_TRACING
  extern void *kmem_cache_alloc_trace(size_t size,
-@@ -152,6 +157,13 @@ found:
+@@ -152,6 +161,13 @@ found:
  			cachep = malloc_sizes[i].cs_dmacachep;
  		else
  #endif
@@ -72974,7 +72930,7 @@ index d00e0ba..ce1f90b 100644
  			cachep = malloc_sizes[i].cs_cachep;
  
  		ret = kmem_cache_alloc_trace(size, cachep, flags);
-@@ -162,7 +174,7 @@ found:
+@@ -162,7 +178,7 @@ found:
  }
  
  #ifdef CONFIG_NUMA
@@ -72983,7 +72939,7 @@ index d00e0ba..ce1f90b 100644
  extern void *kmem_cache_alloc_node(struct kmem_cache *, gfp_t flags, int node);
  
  #ifdef CONFIG_TRACING
-@@ -181,6 +193,7 @@ kmem_cache_alloc_node_trace(size_t size,
+@@ -181,6 +197,7 @@ kmem_cache_alloc_node_trace(size_t size,
  }
  #endif
  
@@ -72991,7 +72947,7 @@ index d00e0ba..ce1f90b 100644
  static __always_inline void *kmalloc_node(size_t size, gfp_t flags, int node)
  {
  	struct kmem_cache *cachep;
-@@ -205,6 +218,13 @@ found:
+@@ -205,6 +222,13 @@ found:
  			cachep = malloc_sizes[i].cs_dmacachep;
  		else
  #endif
@@ -76050,7 +76006,7 @@ index 63786e7..0780cac 100644
  #ifdef CONFIG_MODULE_UNLOAD
  		{
 diff --git a/kernel/events/core.c b/kernel/events/core.c
-index 9f21915..73a9f27 100644
+index 8be9b746..cb7b792 100644
 --- a/kernel/events/core.c
 +++ b/kernel/events/core.c
 @@ -145,8 +145,15 @@ static struct srcu_struct pmus_srcu;
@@ -76079,7 +76035,7 @@ index 9f21915..73a9f27 100644
  
  static void cpu_ctx_sched_out(struct perf_cpu_context *cpuctx,
  			      enum event_type_t event_type);
-@@ -2540,7 +2547,7 @@ static void __perf_event_read(void *info)
+@@ -2559,7 +2566,7 @@ static void __perf_event_read(void *info)
  
  static inline u64 perf_event_count(struct perf_event *event)
  {
@@ -76088,7 +76044,7 @@ index 9f21915..73a9f27 100644
  }
  
  static u64 perf_event_read(struct perf_event *event)
-@@ -3071,9 +3078,9 @@ u64 perf_event_read_value(struct perf_event *event, u64 *enabled, u64 *running)
+@@ -3105,9 +3112,9 @@ u64 perf_event_read_value(struct perf_event *event, u64 *enabled, u64 *running)
  	mutex_lock(&event->child_mutex);
  	total += perf_event_read(event);
  	*enabled += event->total_time_enabled +
@@ -76100,7 +76056,7 @@ index 9f21915..73a9f27 100644
  
  	list_for_each_entry(child, &event->child_list, child_list) {
  		total += perf_event_read(child);
-@@ -3482,10 +3489,10 @@ void perf_event_update_userpage(struct perf_event *event)
+@@ -3499,10 +3506,10 @@ void perf_event_update_userpage(struct perf_event *event)
  		userpg->offset -= local64_read(&event->hw.prev_count);
  
  	userpg->time_enabled = enabled +
@@ -76113,7 +76069,7 @@ index 9f21915..73a9f27 100644
  
  	barrier();
  	++userpg->lock;
-@@ -3914,11 +3921,11 @@ static void perf_output_read_one(struct perf_output_handle *handle,
+@@ -4010,11 +4017,11 @@ static void perf_output_read_one(struct perf_output_handle *handle,
  	values[n++] = perf_event_count(event);
  	if (read_format & PERF_FORMAT_TOTAL_TIME_ENABLED) {
  		values[n++] = enabled +
@@ -76127,7 +76083,7 @@ index 9f21915..73a9f27 100644
  	}
  	if (read_format & PERF_FORMAT_ID)
  		values[n++] = primary_event_id(event);
-@@ -4569,12 +4576,12 @@ static void perf_event_mmap_event(struct perf_mmap_event *mmap_event)
+@@ -4665,12 +4672,12 @@ static void perf_event_mmap_event(struct perf_mmap_event *mmap_event)
  		 * need to add enough zero bytes after the string to handle
  		 * the 64bit alignment we do later.
  		 */
@@ -76142,7 +76098,7 @@ index 9f21915..73a9f27 100644
  		if (IS_ERR(name)) {
  			name = strncpy(tmp, "//toolong", sizeof(tmp));
  			goto got_name;
-@@ -5931,7 +5938,7 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
+@@ -6027,7 +6034,7 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
  	event->parent		= parent_event;
  
  	event->ns		= get_pid_ns(current->nsproxy->pid_ns);
@@ -76151,7 +76107,7 @@ index 9f21915..73a9f27 100644
  
  	event->state		= PERF_EVENT_STATE_INACTIVE;
  
-@@ -6164,6 +6171,11 @@ SYSCALL_DEFINE5(perf_event_open,
+@@ -6274,6 +6281,11 @@ SYSCALL_DEFINE5(perf_event_open,
  	if (flags & ~PERF_FLAG_ALL)
  		return -EINVAL;
  
@@ -76163,7 +76119,7 @@ index 9f21915..73a9f27 100644
  	err = perf_copy_attr(attr_uptr, &attr);
  	if (err)
  		return err;
-@@ -6451,10 +6463,10 @@ static void sync_child_event(struct perf_event *child_event,
+@@ -6561,10 +6573,10 @@ static void sync_child_event(struct perf_event *child_event,
  	/*
  	 * Add back the child's count to the parent's count:
  	 */
@@ -76248,7 +76204,7 @@ index 234e152..0ae0243 100644
  {
  	struct signal_struct *sig = current->signal;
 diff --git a/kernel/fork.c b/kernel/fork.c
-index ce0c182..64aeae3 100644
+index ce0c182..16fd1e0 100644
 --- a/kernel/fork.c
 +++ b/kernel/fork.c
 @@ -270,19 +270,24 @@ static struct task_struct *dup_task_struct(struct task_struct *orig)
@@ -76583,6 +76539,15 @@ index ce0c182..64aeae3 100644
  		if (clone_flags & CLONE_VFORK) {
  			p->vfork_done = &vfork;
  			init_completion(&vfork);
+@@ -1591,7 +1670,7 @@ void __init proc_caches_init(void)
+ 	mm_cachep = kmem_cache_create("mm_struct",
+ 			sizeof(struct mm_struct), ARCH_MIN_MMSTRUCT_ALIGN,
+ 			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_NOTRACK, NULL);
+-	vm_area_cachep = KMEM_CACHE(vm_area_struct, SLAB_PANIC);
++	vm_area_cachep = KMEM_CACHE(vm_area_struct, SLAB_PANIC | SLAB_NO_SANITIZE);
+ 	mmap_init();
+ 	nsproxy_cache_init();
+ }
 @@ -1630,7 +1709,7 @@ static int unshare_fs(unsigned long unshare_flags, struct fs_struct **new_fsp)
  		return 0;
  
@@ -76603,7 +76568,7 @@ index ce0c182..64aeae3 100644
  			else
  				new_fs = fs;
 diff --git a/kernel/futex.c b/kernel/futex.c
-index 77bccfc..f2b5e1f 100644
+index 1d0538e..58e6a1a 100644
 --- a/kernel/futex.c
 +++ b/kernel/futex.c
 @@ -54,6 +54,7 @@
@@ -76614,7 +76579,7 @@ index 77bccfc..f2b5e1f 100644
  #include <linux/signal.h>
  #include <linux/export.h>
  #include <linux/magic.h>
-@@ -239,6 +240,11 @@ get_futex_key(u32 __user *uaddr, int fshared, union futex_key *key, int rw)
+@@ -240,6 +241,11 @@ get_futex_key(u32 __user *uaddr, int fshared, union futex_key *key, int rw)
  	struct page *page, *page_head;
  	int err, ro = 0;
  
@@ -76626,7 +76591,7 @@ index 77bccfc..f2b5e1f 100644
  	/*
  	 * The futex address must be "naturally" aligned.
  	 */
-@@ -2743,6 +2749,7 @@ static int __init futex_init(void)
+@@ -2744,6 +2750,7 @@ static int __init futex_init(void)
  {
  	u32 curval;
  	int i;
@@ -76634,7 +76599,7 @@ index 77bccfc..f2b5e1f 100644
  
  	/*
  	 * This will fail and we want it. Some arch implementations do
-@@ -2754,8 +2761,11 @@ static int __init futex_init(void)
+@@ -2755,8 +2762,11 @@ static int __init futex_init(void)
  	 * implementation, the non-functional ones will return
  	 * -ENOSYS.
  	 */
@@ -78434,7 +78399,7 @@ index 3d4b954..11af930 100644
  
  		if (pm_wakeup_pending()) {
 diff --git a/kernel/printk.c b/kernel/printk.c
-index c0d12ea..5ac488d 100644
+index 16688ec..327729b 100644
 --- a/kernel/printk.c
 +++ b/kernel/printk.c
 @@ -313,6 +313,11 @@ static int check_syslog_permissions(int type, bool from_file)
@@ -80483,10 +80448,10 @@ index 0b537f2..40d6c20 100644
  		return -ENOMEM;
  	return 0;
 diff --git a/kernel/timer.c b/kernel/timer.c
-index f2f71d7..dd26ca7 100644
+index f8b05a4..9769e5b 100644
 --- a/kernel/timer.c
 +++ b/kernel/timer.c
-@@ -1306,7 +1306,7 @@ void update_process_times(int user_tick)
+@@ -1308,7 +1308,7 @@ void update_process_times(int user_tick)
  /*
   * This function runs timers and the timer-tq in bottom half context.
   */
@@ -80495,7 +80460,7 @@ index f2f71d7..dd26ca7 100644
  {
  	struct tvec_base *base = __this_cpu_read(tvec_bases);
  
-@@ -1433,7 +1433,7 @@ static void process_timeout(unsigned long __data)
+@@ -1435,7 +1435,7 @@ static void process_timeout(unsigned long __data)
   *
   * In all cases the return value is guaranteed to be non-negative.
   */
@@ -80504,7 +80469,7 @@ index f2f71d7..dd26ca7 100644
  {
  	struct timer_list timer;
  	unsigned long expire;
-@@ -1725,7 +1725,7 @@ static int __cpuinit timer_cpu_notify(struct notifier_block *self,
+@@ -1727,7 +1727,7 @@ static int __cpuinit timer_cpu_notify(struct notifier_block *self,
  	return NOTIFY_OK;
  }
  
@@ -81948,10 +81913,10 @@ index d80ac4b..9fd73bc 100644
  	/* if an huge pmd materialized from under us just retry later */
  	if (unlikely(pmd_trans_huge(*pmd)))
 diff --git a/mm/hugetlb.c b/mm/hugetlb.c
-index 2dcd716..984ad56 100644
+index ddf2128..af57f40 100644
 --- a/mm/hugetlb.c
 +++ b/mm/hugetlb.c
-@@ -1973,15 +1973,17 @@ static int hugetlb_sysctl_handler_common(bool obey_mempolicy,
+@@ -1990,15 +1990,17 @@ static int hugetlb_sysctl_handler_common(bool obey_mempolicy,
  	struct hstate *h = &default_hstate;
  	unsigned long tmp;
  	int ret;
@@ -81972,7 +81937,7 @@ index 2dcd716..984ad56 100644
  	if (ret)
  		goto out;
  
-@@ -2038,15 +2040,17 @@ int hugetlb_overcommit_handler(struct ctl_table *table, int write,
+@@ -2055,15 +2057,17 @@ int hugetlb_overcommit_handler(struct ctl_table *table, int write,
  	struct hstate *h = &default_hstate;
  	unsigned long tmp;
  	int ret;
@@ -81993,7 +81958,7 @@ index 2dcd716..984ad56 100644
  	if (ret)
  		goto out;
  
-@@ -2465,6 +2469,27 @@ static int unmap_ref_private(struct mm_struct *mm, struct vm_area_struct *vma,
+@@ -2482,6 +2486,27 @@ static int unmap_ref_private(struct mm_struct *mm, struct vm_area_struct *vma,
  	return 1;
  }
  
@@ -82021,7 +81986,7 @@ index 2dcd716..984ad56 100644
  /*
   * Hugetlb_cow() should be called with page lock of the original hugepage held.
   */
-@@ -2567,6 +2592,11 @@ retry_avoidcopy:
+@@ -2584,6 +2609,11 @@ retry_avoidcopy:
  				make_huge_pte(vma, new_page, 1));
  		page_remove_rmap(old_page);
  		hugepage_add_new_anon_rmap(new_page, vma, address);
@@ -82033,7 +81998,7 @@ index 2dcd716..984ad56 100644
  		/* Make the old page be freed below */
  		new_page = old_page;
  		mmu_notifier_invalidate_range_end(mm,
-@@ -2718,6 +2748,10 @@ retry:
+@@ -2735,6 +2765,10 @@ retry:
  				&& (vma->vm_flags & VM_SHARED)));
  	set_huge_pte_at(mm, address, ptep, new_pte);
  
@@ -82044,7 +82009,7 @@ index 2dcd716..984ad56 100644
  	if ((flags & FAULT_FLAG_WRITE) && !(vma->vm_flags & VM_SHARED)) {
  		/* Optimization, do the COW without a second fault */
  		ret = hugetlb_cow(mm, vma, address, ptep, new_pte, page);
-@@ -2747,6 +2781,10 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
+@@ -2764,6 +2798,10 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
  	static DEFINE_MUTEX(hugetlb_instantiation_mutex);
  	struct hstate *h = hstate_vma(vma);
  
@@ -82055,7 +82020,7 @@ index 2dcd716..984ad56 100644
  	ptep = huge_pte_offset(mm, address);
  	if (ptep) {
  		entry = huge_ptep_get(ptep);
-@@ -2758,6 +2796,26 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
+@@ -2775,6 +2813,26 @@ int hugetlb_fault(struct mm_struct *mm, struct vm_area_struct *vma,
  			       VM_FAULT_SET_HINDEX(h - hstates);
  	}
  
@@ -83209,6 +83174,28 @@ index 4f4f53b..02d443a 100644
  	if (!(flags & MCL_CURRENT) || (current->mm->total_vm <= lock_limit) ||
  	    capable(CAP_IPC_LOCK))
  		ret = do_mlockall(flags);
+diff --git a/mm/mm_init.c b/mm/mm_init.c
+index 1ffd97a..240aa20 100644
+--- a/mm/mm_init.c
++++ b/mm/mm_init.c
+@@ -11,6 +11,17 @@
+ #include <linux/export.h>
+ #include "internal.h"
+ 
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++bool pax_sanitize_slab __read_only = true;
++static int __init pax_sanitize_slab_setup(char *str)
++{
++	pax_sanitize_slab = !!simple_strtol(str, NULL, 0);
++	printk("%sabled PaX slab sanitization\n", pax_sanitize_slab ? "En" : "Dis");
++	return 1;
++}
++__setup("pax_sanitize_slab=", pax_sanitize_slab_setup);
++#endif
++
+ #ifdef CONFIG_DEBUG_MEMORY_INIT
+ int mminit_loglevel;
+ 
 diff --git a/mm/mmap.c b/mm/mmap.c
 index dff37a6..0e57094 100644
 --- a/mm/mmap.c
@@ -85321,7 +85308,7 @@ index 70e814a..38e1f43 100644
  		rc = process_vm_rw_single_vec(
  			(unsigned long)rvec[i].iov_base, rvec[i].iov_len,
 diff --git a/mm/rmap.c b/mm/rmap.c
-index 8685697..b490361 100644
+index 8685697..e047d10 100644
 --- a/mm/rmap.c
 +++ b/mm/rmap.c
 @@ -153,6 +153,10 @@ int anon_vma_prepare(struct vm_area_struct *vma)
@@ -85413,6 +85400,19 @@ index 8685697..b490361 100644
  {
  	struct anon_vma_chain *avc;
  	struct anon_vma *anon_vma;
+@@ -381,8 +418,10 @@ static void anon_vma_ctor(void *data)
+ void __init anon_vma_init(void)
+ {
+ 	anon_vma_cachep = kmem_cache_create("anon_vma", sizeof(struct anon_vma),
+-			0, SLAB_DESTROY_BY_RCU|SLAB_PANIC, anon_vma_ctor);
+-	anon_vma_chain_cachep = KMEM_CACHE(anon_vma_chain, SLAB_PANIC);
++			0, SLAB_DESTROY_BY_RCU|SLAB_PANIC|SLAB_NO_SANITIZE,
++			anon_vma_ctor);
++	anon_vma_chain_cachep = KMEM_CACHE(anon_vma_chain,
++			SLAB_PANIC|SLAB_NO_SANITIZE);
+ }
+ 
+ /*
 diff --git a/mm/shmem.c b/mm/shmem.c
 index a78acf0..a31df98 100644
 --- a/mm/shmem.c
@@ -85474,7 +85474,7 @@ index a78acf0..a31df98 100644
  		return -ENOMEM;
  
 diff --git a/mm/slab.c b/mm/slab.c
-index 4c3b671..020b6bb 100644
+index 4c3b671..884702c 100644
 --- a/mm/slab.c
 +++ b/mm/slab.c
 @@ -151,7 +151,7 @@
@@ -85482,19 +85482,21 @@ index 4c3b671..020b6bb 100644
  /* Legal flag mask for kmem_cache_create(). */
  #if DEBUG
 -# define CREATE_MASK	(SLAB_RED_ZONE | \
-+# define CREATE_MASK	(SLAB_USERCOPY | SLAB_RED_ZONE | \
++# define CREATE_MASK	(SLAB_USERCOPY | SLAB_NO_SANITIZE | SLAB_RED_ZONE | \
  			 SLAB_POISON | SLAB_HWCACHE_ALIGN | \
  			 SLAB_CACHE_DMA | \
  			 SLAB_STORE_USER | \
-@@ -159,7 +159,7 @@
+@@ -159,8 +159,8 @@
  			 SLAB_DESTROY_BY_RCU | SLAB_MEM_SPREAD | \
  			 SLAB_DEBUG_OBJECTS | SLAB_NOLEAKTRACE | SLAB_NOTRACK)
  #else
 -# define CREATE_MASK	(SLAB_HWCACHE_ALIGN | \
-+# define CREATE_MASK	(SLAB_USERCOPY | SLAB_HWCACHE_ALIGN | \
- 			 SLAB_CACHE_DMA | \
+-			 SLAB_CACHE_DMA | \
++# define CREATE_MASK	(SLAB_USERCOPY | SLAB_NO_SANITIZE | \
++			 SLAB_HWCACHE_ALIGN | SLAB_CACHE_DMA | \
  			 SLAB_RECLAIM_ACCOUNT | SLAB_PANIC | \
  			 SLAB_DESTROY_BY_RCU | SLAB_MEM_SPREAD | \
+ 			 SLAB_DEBUG_OBJECTS | SLAB_NOLEAKTRACE | SLAB_NOTRACK)
 @@ -288,7 +288,7 @@ struct kmem_list3 {
   * Need this for bootstrapping a per node allocator.
   */
@@ -85504,7 +85506,7 @@ index 4c3b671..020b6bb 100644
  #define	CACHE_CACHE 0
  #define	SIZE_AC MAX_NUMNODES
  #define	SIZE_L3 (2 * MAX_NUMNODES)
-@@ -389,10 +389,10 @@ static void kmem_list3_init(struct kmem_list3 *parent)
+@@ -389,10 +389,12 @@ static void kmem_list3_init(struct kmem_list3 *parent)
  		if ((x)->max_freeable < i)				\
  			(x)->max_freeable = i;				\
  	} while (0)
@@ -85516,10 +85518,21 @@ index 4c3b671..020b6bb 100644
 +#define STATS_INC_ALLOCMISS(x)	atomic_inc_unchecked(&(x)->allocmiss)
 +#define STATS_INC_FREEHIT(x)	atomic_inc_unchecked(&(x)->freehit)
 +#define STATS_INC_FREEMISS(x)	atomic_inc_unchecked(&(x)->freemiss)
++#define STATS_INC_SANITIZED(x)	atomic_inc_unchecked(&(x)->sanitized)
++#define STATS_INC_NOT_SANITIZED(x) atomic_inc_unchecked(&(x)->not_sanitized)
  #else
  #define	STATS_INC_ACTIVE(x)	do { } while (0)
  #define	STATS_DEC_ACTIVE(x)	do { } while (0)
-@@ -538,7 +538,7 @@ static inline void *index_to_obj(struct kmem_cache *cache, struct slab *slab,
+@@ -409,6 +411,8 @@ static void kmem_list3_init(struct kmem_list3 *parent)
+ #define STATS_INC_ALLOCMISS(x)	do { } while (0)
+ #define STATS_INC_FREEHIT(x)	do { } while (0)
+ #define STATS_INC_FREEMISS(x)	do { } while (0)
++#define STATS_INC_SANITIZED(x)	do { } while (0)
++#define STATS_INC_NOT_SANITIZED(x) do { } while (0)
+ #endif
+ 
+ #if DEBUG
+@@ -538,7 +542,7 @@ static inline void *index_to_obj(struct kmem_cache *cache, struct slab *slab,
   *   reciprocal_divide(offset, cache->reciprocal_buffer_size)
   */
  static inline unsigned int obj_to_index(const struct kmem_cache *cache,
@@ -85528,7 +85541,7 @@ index 4c3b671..020b6bb 100644
  {
  	u32 offset = (obj - slab->s_mem);
  	return reciprocal_divide(offset, cache->reciprocal_buffer_size);
-@@ -559,12 +559,13 @@ EXPORT_SYMBOL(malloc_sizes);
+@@ -559,12 +563,13 @@ EXPORT_SYMBOL(malloc_sizes);
  struct cache_names {
  	char *name;
  	char *name_dma;
@@ -85544,7 +85557,7 @@ index 4c3b671..020b6bb 100644
  #undef CACHE
  };
  
-@@ -752,6 +753,12 @@ static inline struct kmem_cache *__find_general_cachep(size_t size,
+@@ -752,6 +757,12 @@ static inline struct kmem_cache *__find_general_cachep(size_t size,
  	if (unlikely(gfpflags & GFP_DMA))
  		return csizep->cs_dmacachep;
  #endif
@@ -85557,7 +85570,7 @@ index 4c3b671..020b6bb 100644
  	return csizep->cs_cachep;
  }
  
-@@ -1370,7 +1377,7 @@ static int __cpuinit cpuup_callback(struct notifier_block *nfb,
+@@ -1370,7 +1381,7 @@ static int __cpuinit cpuup_callback(struct notifier_block *nfb,
  	return notifier_from_errno(err);
  }
  
@@ -85566,7 +85579,7 @@ index 4c3b671..020b6bb 100644
  	&cpuup_callback, NULL, 0
  };
  
-@@ -1572,7 +1579,7 @@ void __init kmem_cache_init(void)
+@@ -1572,7 +1583,7 @@ void __init kmem_cache_init(void)
  	sizes[INDEX_AC].cs_cachep = kmem_cache_create(names[INDEX_AC].name,
  					sizes[INDEX_AC].cs_size,
  					ARCH_KMALLOC_MINALIGN,
@@ -85575,7 +85588,7 @@ index 4c3b671..020b6bb 100644
  					NULL);
  
  	if (INDEX_AC != INDEX_L3) {
-@@ -1580,7 +1587,7 @@ void __init kmem_cache_init(void)
+@@ -1580,7 +1591,7 @@ void __init kmem_cache_init(void)
  			kmem_cache_create(names[INDEX_L3].name,
  				sizes[INDEX_L3].cs_size,
  				ARCH_KMALLOC_MINALIGN,
@@ -85584,7 +85597,7 @@ index 4c3b671..020b6bb 100644
  				NULL);
  	}
  
-@@ -1598,7 +1605,7 @@ void __init kmem_cache_init(void)
+@@ -1598,7 +1609,7 @@ void __init kmem_cache_init(void)
  			sizes->cs_cachep = kmem_cache_create(names->name,
  					sizes->cs_size,
  					ARCH_KMALLOC_MINALIGN,
@@ -85593,7 +85606,7 @@ index 4c3b671..020b6bb 100644
  					NULL);
  		}
  #ifdef CONFIG_ZONE_DMA
-@@ -1610,6 +1617,16 @@ void __init kmem_cache_init(void)
+@@ -1610,6 +1621,16 @@ void __init kmem_cache_init(void)
  						SLAB_PANIC,
  					NULL);
  #endif
@@ -85610,7 +85623,29 @@ index 4c3b671..020b6bb 100644
  		sizes++;
  		names++;
  	}
-@@ -3879,6 +3896,7 @@ void kfree(const void *objp)
+@@ -3662,6 +3683,21 @@ static inline void __cache_free(struct kmem_cache *cachep, void *objp,
+ 	struct array_cache *ac = cpu_cache_get(cachep);
+ 
+ 	check_irq_off();
++
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++	if (pax_sanitize_slab) {
++		if (!(cachep->flags & (SLAB_POISON | SLAB_NO_SANITIZE))) {
++			memset(objp, PAX_MEMORY_SANITIZE_VALUE, obj_size(cachep));
++
++			if (cachep->ctor)
++				cachep->ctor(objp);
++
++			STATS_INC_SANITIZED(cachep);
++		} else
++			STATS_INC_NOT_SANITIZED(cachep);
++	}
++#endif
++
+ 	kmemleak_free_recursive(objp, cachep->flags);
+ 	objp = cache_free_debugcheck(cachep, objp, caller);
+ 
+@@ -3879,6 +3915,7 @@ void kfree(const void *objp)
  
  	if (unlikely(ZERO_OR_NULL_PTR(objp)))
  		return;
@@ -85618,7 +85653,17 @@ index 4c3b671..020b6bb 100644
  	local_irq_save(flags);
  	kfree_debugcheck(objp);
  	c = virt_to_cache(objp);
-@@ -4325,10 +4343,10 @@ static int s_show(struct seq_file *m, void *p)
+@@ -4216,6 +4253,9 @@ static void print_slabinfo_header(struct seq_file *m)
+ 	seq_puts(m, " : globalstat <listallocs> <maxobjs> <grown> <reaped> "
+ 		 "<error> <maxfreeable> <nodeallocs> <remotefrees> <alienoverflow>");
+ 	seq_puts(m, " : cpustat <allochit> <allocmiss> <freehit> <freemiss>");
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++	seq_puts(m, " : pax <sanitized> <not_sanitized>");
++#endif
+ #endif
+ 	seq_putc(m, '\n');
+ }
+@@ -4325,14 +4365,22 @@ static int s_show(struct seq_file *m, void *p)
  	}
  	/* cpu stats */
  	{
@@ -85633,7 +85678,19 @@ index 4c3b671..020b6bb 100644
  
  		seq_printf(m, " : cpustat %6lu %6lu %6lu %6lu",
  			   allochit, allocmiss, freehit, freemiss);
-@@ -4587,13 +4605,71 @@ static int __init slab_proc_init(void)
+ 	}
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++	{
++		unsigned long sanitized = atomic_read_unchecked(&cachep->sanitized);
++		unsigned long not_sanitized = atomic_read_unchecked(&cachep->not_sanitized);
++
++		seq_printf(m, " : pax %6lu %6lu", sanitized, not_sanitized);
++	}
++#endif
+ #endif
+ 	seq_putc(m, '\n');
+ 	return 0;
+@@ -4587,13 +4635,71 @@ static int __init slab_proc_init(void)
  {
  	proc_create("slabinfo",S_IWUSR|S_IRUSR,NULL,&proc_slabinfo_operations);
  #ifdef CONFIG_DEBUG_SLAB_LEAK
@@ -85707,7 +85764,7 @@ index 4c3b671..020b6bb 100644
   * ksize - get the actual amount of memory allocated for a given object
   * @objp: Pointer to the object
 diff --git a/mm/slob.c b/mm/slob.c
-index 8105be4..e1af823 100644
+index 8105be4..8c1ce34 100644
 --- a/mm/slob.c
 +++ b/mm/slob.c
 @@ -29,7 +29,7 @@
@@ -85804,7 +85861,19 @@ index 8105be4..e1af823 100644
  		INIT_LIST_HEAD(&sp->list);
  		set_slob(b, SLOB_UNITS(PAGE_SIZE), b + SLOB_UNITS(PAGE_SIZE));
  		set_slob_page_free(sp, slob_list);
-@@ -476,10 +477,9 @@ out:
+@@ -418,6 +419,11 @@ static void slob_free(void *block, int size)
+ 		return;
+ 	}
+ 
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++	if (pax_sanitize_slab)
++		memset(block, PAX_MEMORY_SANITIZE_VALUE, size);
++#endif
++
+ 	if (!slob_page_free(sp)) {
+ 		/* This slob page is about to become partially free. Easy! */
+ 		sp->units = units;
+@@ -476,10 +482,9 @@ out:
   * End of slob allocator proper. Begin kmem_cache_alloc and kmalloc frontend.
   */
  
@@ -85817,7 +85886,7 @@ index 8105be4..e1af823 100644
  	void *ret;
  
  	gfp &= gfp_allowed_mask;
-@@ -494,7 +494,10 @@ void *__kmalloc_node(size_t size, gfp_t gfp, int node)
+@@ -494,7 +499,10 @@ void *__kmalloc_node(size_t size, gfp_t gfp, int node)
  
  		if (!m)
  			return NULL;
@@ -85829,7 +85898,7 @@ index 8105be4..e1af823 100644
  		ret = (void *)m + align;
  
  		trace_kmalloc_node(_RET_IP_, ret,
-@@ -506,16 +509,25 @@ void *__kmalloc_node(size_t size, gfp_t gfp, int node)
+@@ -506,16 +514,25 @@ void *__kmalloc_node(size_t size, gfp_t gfp, int node)
  			gfp |= __GFP_COMP;
  		ret = slob_new_pages(gfp, order, node);
  		if (ret) {
@@ -85859,7 +85928,7 @@ index 8105be4..e1af823 100644
  	return ret;
  }
  EXPORT_SYMBOL(__kmalloc_node);
-@@ -530,16 +542,92 @@ void kfree(const void *block)
+@@ -530,16 +547,92 @@ void kfree(const void *block)
  		return;
  	kmemleak_free(block);
  
@@ -85955,7 +86024,7 @@ index 8105be4..e1af823 100644
  /* can't use ksize for kmem_cache_alloc memory, only kmalloc */
  size_t ksize(const void *block)
  {
-@@ -552,10 +640,10 @@ size_t ksize(const void *block)
+@@ -552,10 +645,10 @@ size_t ksize(const void *block)
  	sp = slob_page(block);
  	if (is_slob_page(sp)) {
  		int align = max(ARCH_KMALLOC_MINALIGN, ARCH_SLAB_MINALIGN);
@@ -85969,7 +86038,7 @@ index 8105be4..e1af823 100644
  }
  EXPORT_SYMBOL(ksize);
  
-@@ -571,8 +659,13 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size,
+@@ -571,8 +664,13 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size,
  {
  	struct kmem_cache *c;
  
@@ -85983,7 +86052,7 @@ index 8105be4..e1af823 100644
  
  	if (c) {
  		c->name = name;
-@@ -614,17 +707,25 @@ void *kmem_cache_alloc_node(struct kmem_cache *c, gfp_t flags, int node)
+@@ -614,17 +712,25 @@ void *kmem_cache_alloc_node(struct kmem_cache *c, gfp_t flags, int node)
  
  	lockdep_trace_alloc(flags);
  
@@ -86009,7 +86078,7 @@ index 8105be4..e1af823 100644
  
  	if (c->ctor)
  		c->ctor(b);
-@@ -636,10 +737,16 @@ EXPORT_SYMBOL(kmem_cache_alloc_node);
+@@ -636,10 +742,16 @@ EXPORT_SYMBOL(kmem_cache_alloc_node);
  
  static void __kmem_cache_free(void *b, int size)
  {
@@ -86028,7 +86097,7 @@ index 8105be4..e1af823 100644
  }
  
  static void kmem_rcu_free(struct rcu_head *head)
-@@ -652,17 +759,31 @@ static void kmem_rcu_free(struct rcu_head *head)
+@@ -652,17 +764,31 @@ static void kmem_rcu_free(struct rcu_head *head)
  
  void kmem_cache_free(struct kmem_cache *c, void *b)
  {
@@ -86064,7 +86133,7 @@ index 8105be4..e1af823 100644
  EXPORT_SYMBOL(kmem_cache_free);
  
 diff --git a/mm/slub.c b/mm/slub.c
-index 5710788..12ea6c9 100644
+index 5710788..3d095c0 100644
 --- a/mm/slub.c
 +++ b/mm/slub.c
 @@ -186,7 +186,7 @@ static enum {
@@ -86094,7 +86163,22 @@ index 5710788..12ea6c9 100644
  		s, (void *)t->addr, jiffies - t->when, t->cpu, t->pid);
  #ifdef CONFIG_STACKTRACE
  	{
-@@ -2572,6 +2572,8 @@ void kmem_cache_free(struct kmem_cache *s, void *x)
+@@ -2537,6 +2537,14 @@ static __always_inline void slab_free(struct kmem_cache *s,
+ 
+ 	slab_free_hook(s, x);
+ 
++#ifdef CONFIG_PAX_MEMORY_SANITIZE
++	if (pax_sanitize_slab && !(s->flags & SLAB_NO_SANITIZE)) {
++		memset(x, PAX_MEMORY_SANITIZE_VALUE, s->objsize);
++		if (s->ctor)
++			s->ctor(x);
++	}
++#endif
++
+ redo:
+ 	/*
+ 	 * Determine the currently cpus per cpu slab.
+@@ -2572,6 +2580,8 @@ void kmem_cache_free(struct kmem_cache *s, void *x)
  
  	page = virt_to_head_page(x);
  
@@ -86103,7 +86187,7 @@ index 5710788..12ea6c9 100644
  	slab_free(s, page, x, _RET_IP_);
  
  	trace_kmem_cache_free(_RET_IP_, x);
-@@ -2605,7 +2607,7 @@ static int slub_min_objects;
+@@ -2605,7 +2615,7 @@ static int slub_min_objects;
   * Merge control. If this is set then no merging of slab caches will occur.
   * (Could be removed. This was introduced to pacify the merge skeptics.)
   */
@@ -86112,7 +86196,7 @@ index 5710788..12ea6c9 100644
  
  /*
   * Calculate the order of allocation given an slab object size.
-@@ -3055,7 +3057,7 @@ static int kmem_cache_open(struct kmem_cache *s,
+@@ -3055,7 +3065,7 @@ static int kmem_cache_open(struct kmem_cache *s,
  	else
  		s->cpu_partial = 30;
  
@@ -86121,7 +86205,7 @@ index 5710788..12ea6c9 100644
  #ifdef CONFIG_NUMA
  	s->remote_node_defrag_ratio = 1000;
  #endif
-@@ -3159,8 +3161,7 @@ static inline int kmem_cache_close(struct kmem_cache *s)
+@@ -3159,8 +3169,7 @@ static inline int kmem_cache_close(struct kmem_cache *s)
  void kmem_cache_destroy(struct kmem_cache *s)
  {
  	down_write(&slub_lock);
@@ -86131,7 +86215,7 @@ index 5710788..12ea6c9 100644
  		list_del(&s->list);
  		up_write(&slub_lock);
  		if (kmem_cache_close(s)) {
-@@ -3189,6 +3190,10 @@ static struct kmem_cache *kmem_cache;
+@@ -3189,6 +3198,10 @@ static struct kmem_cache *kmem_cache;
  static struct kmem_cache *kmalloc_dma_caches[SLUB_PAGE_SHIFT];
  #endif
  
@@ -86142,7 +86226,7 @@ index 5710788..12ea6c9 100644
  static int __init setup_slub_min_order(char *str)
  {
  	get_option(&str, &slub_min_order);
-@@ -3303,6 +3308,13 @@ static struct kmem_cache *get_slab(size_t size, gfp_t flags)
+@@ -3303,6 +3316,13 @@ static struct kmem_cache *get_slab(size_t size, gfp_t flags)
  		return kmalloc_dma_caches[index];
  
  #endif
@@ -86156,7 +86240,7 @@ index 5710788..12ea6c9 100644
  	return kmalloc_caches[index];
  }
  
-@@ -3371,6 +3383,59 @@ void *__kmalloc_node(size_t size, gfp_t flags, int node)
+@@ -3371,6 +3391,59 @@ void *__kmalloc_node(size_t size, gfp_t flags, int node)
  EXPORT_SYMBOL(__kmalloc_node);
  #endif
  
@@ -86216,7 +86300,7 @@ index 5710788..12ea6c9 100644
  size_t ksize(const void *object)
  {
  	struct page *page;
-@@ -3435,6 +3500,7 @@ void kfree(const void *x)
+@@ -3435,6 +3508,7 @@ void kfree(const void *x)
  	if (unlikely(ZERO_OR_NULL_PTR(x)))
  		return;
  
@@ -86224,7 +86308,7 @@ index 5710788..12ea6c9 100644
  	page = virt_to_head_page(x);
  	if (unlikely(!PageSlab(page))) {
  		BUG_ON(!PageCompound(page));
-@@ -3645,7 +3711,7 @@ static void __init kmem_cache_bootstrap_fixup(struct kmem_cache *s)
+@@ -3645,7 +3719,7 @@ static void __init kmem_cache_bootstrap_fixup(struct kmem_cache *s)
  	int node;
  
  	list_add(&s->list, &slab_caches);
@@ -86233,7 +86317,7 @@ index 5710788..12ea6c9 100644
  
  	for_each_node_state(node, N_NORMAL_MEMORY) {
  		struct kmem_cache_node *n = get_node(s, node);
-@@ -3762,17 +3828,17 @@ void __init kmem_cache_init(void)
+@@ -3762,17 +3836,17 @@ void __init kmem_cache_init(void)
  
  	/* Caches that are not of the two-to-the-power-of size */
  	if (KMALLOC_MIN_SIZE <= 32) {
@@ -86254,7 +86338,7 @@ index 5710788..12ea6c9 100644
  		caches++;
  	}
  
-@@ -3814,6 +3880,22 @@ void __init kmem_cache_init(void)
+@@ -3814,6 +3888,22 @@ void __init kmem_cache_init(void)
  		}
  	}
  #endif
@@ -86277,7 +86361,7 @@ index 5710788..12ea6c9 100644
  	printk(KERN_INFO
  		"SLUB: Genslabs=%d, HWalign=%d, Order=%d-%d, MinObjects=%d,"
  		" CPUs=%d, Nodes=%d\n",
-@@ -3840,7 +3922,7 @@ static int slab_unmergeable(struct kmem_cache *s)
+@@ -3840,7 +3930,7 @@ static int slab_unmergeable(struct kmem_cache *s)
  	/*
  	 * We may have set a slab to be unmergeable during bootstrap.
  	 */
@@ -86286,7 +86370,7 @@ index 5710788..12ea6c9 100644
  		return 1;
  
  	return 0;
-@@ -3899,7 +3981,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size,
+@@ -3899,7 +3989,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size,
  	down_write(&slub_lock);
  	s = find_mergeable(size, align, flags, name, ctor);
  	if (s) {
@@ -86295,7 +86379,7 @@ index 5710788..12ea6c9 100644
  		/*
  		 * Adjust the object sizes so that we clear
  		 * the complete object on kzalloc.
-@@ -3908,7 +3990,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size,
+@@ -3908,7 +3998,7 @@ struct kmem_cache *kmem_cache_create(const char *name, size_t size,
  		s->inuse = max_t(int, s->inuse, ALIGN(size, sizeof(void *)));
  
  		if (sysfs_slab_alias(s, name)) {
@@ -86304,7 +86388,7 @@ index 5710788..12ea6c9 100644
  			goto err;
  		}
  		up_write(&slub_lock);
-@@ -3979,7 +4061,7 @@ static int __cpuinit slab_cpuup_callback(struct notifier_block *nfb,
+@@ -3979,7 +4069,7 @@ static int __cpuinit slab_cpuup_callback(struct notifier_block *nfb,
  	return NOTIFY_OK;
  }
  
@@ -86313,7 +86397,7 @@ index 5710788..12ea6c9 100644
  	.notifier_call = slab_cpuup_callback
  };
  
-@@ -4037,7 +4119,7 @@ void *__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
+@@ -4037,7 +4127,7 @@ void *__kmalloc_node_track_caller(size_t size, gfp_t gfpflags,
  }
  #endif
  
@@ -86322,7 +86406,7 @@ index 5710788..12ea6c9 100644
  static int count_inuse(struct page *page)
  {
  	return page->inuse;
-@@ -4424,12 +4506,12 @@ static void resiliency_test(void)
+@@ -4424,12 +4514,12 @@ static void resiliency_test(void)
  	validate_slab_cache(kmalloc_caches[9]);
  }
  #else
@@ -86337,7 +86421,7 @@ index 5710788..12ea6c9 100644
  enum slab_stat_type {
  	SL_ALL,			/* All slabs */
  	SL_PARTIAL,		/* Only partially allocated slabs */
-@@ -4670,7 +4752,7 @@ SLAB_ATTR_RO(ctor);
+@@ -4670,7 +4760,7 @@ SLAB_ATTR_RO(ctor);
  
  static ssize_t aliases_show(struct kmem_cache *s, char *buf)
  {
@@ -86346,7 +86430,7 @@ index 5710788..12ea6c9 100644
  }
  SLAB_ATTR_RO(aliases);
  
-@@ -5237,6 +5319,7 @@ static char *create_unique_id(struct kmem_cache *s)
+@@ -5237,6 +5327,7 @@ static char *create_unique_id(struct kmem_cache *s)
  	return name;
  }
  
@@ -86354,7 +86438,7 @@ index 5710788..12ea6c9 100644
  static int sysfs_slab_add(struct kmem_cache *s)
  {
  	int err;
-@@ -5265,7 +5348,7 @@ static int sysfs_slab_add(struct kmem_cache *s)
+@@ -5265,7 +5356,7 @@ static int sysfs_slab_add(struct kmem_cache *s)
  	}
  
  	s->kobj.kset = slab_kset;
@@ -86363,7 +86447,7 @@ index 5710788..12ea6c9 100644
  	if (err) {
  		kobject_put(&s->kobj);
  		return err;
-@@ -5299,6 +5382,7 @@ static void sysfs_slab_remove(struct kmem_cache *s)
+@@ -5299,6 +5390,7 @@ static void sysfs_slab_remove(struct kmem_cache *s)
  	kobject_del(&s->kobj);
  	kobject_put(&s->kobj);
  }
@@ -86371,7 +86455,7 @@ index 5710788..12ea6c9 100644
  
  /*
   * Need to buffer aliases during bootup until sysfs becomes
-@@ -5312,6 +5396,7 @@ struct saved_alias {
+@@ -5312,6 +5404,7 @@ struct saved_alias {
  
  static struct saved_alias *alias_list;
  
@@ -86379,7 +86463,7 @@ index 5710788..12ea6c9 100644
  static int sysfs_slab_alias(struct kmem_cache *s, const char *name)
  {
  	struct saved_alias *al;
-@@ -5334,6 +5419,7 @@ static int sysfs_slab_alias(struct kmem_cache *s, const char *name)
+@@ -5334,6 +5427,7 @@ static int sysfs_slab_alias(struct kmem_cache *s, const char *name)
  	alias_list = al;
  	return 0;
  }
@@ -87102,20 +87186,10 @@ index 0274157..f8afbf3c7 100644
  	hid->dev.parent = hidp_get_device(session);
  	hid->ll_driver = &hidp_hid_driver;
 diff --git a/net/bluetooth/l2cap_core.c b/net/bluetooth/l2cap_core.c
-index a0b6c50..a5dd784 100644
+index dd7c019..9d19c31 100644
 --- a/net/bluetooth/l2cap_core.c
 +++ b/net/bluetooth/l2cap_core.c
-@@ -1737,6 +1737,9 @@ static struct sk_buff *l2cap_build_cmd(struct l2cap_conn *conn,
- 	BT_DBG("conn %p, code 0x%2.2x, ident 0x%2.2x, len %d",
- 			conn, code, ident, dlen);
- 
-+	if (conn->mtu < L2CAP_HDR_SIZE + L2CAP_CMD_HDR_SIZE)
-+		return NULL;
-+
- 	len = L2CAP_HDR_SIZE + L2CAP_CMD_HDR_SIZE + dlen;
- 	count = min_t(unsigned int, conn->mtu, len);
- 
-@@ -2178,8 +2181,10 @@ static int l2cap_parse_conf_rsp(struct l2cap_chan *chan, void *rsp, int len, voi
+@@ -2181,8 +2181,10 @@ static int l2cap_parse_conf_rsp(struct l2cap_chan *chan, void *rsp, int len, voi
  			break;
  
  		case L2CAP_CONF_RFC:
@@ -87539,30 +87613,6 @@ index f78f898..d7aa843 100644
  	register_netdevice_notifier(&notifier);
  
  	if (__rtnl_register(PF_CAN, RTM_GETROUTE, NULL, cgw_dump_jobs, NULL)) {
-diff --git a/net/ceph/auth_none.c b/net/ceph/auth_none.c
-index 214c2bb..9f78c5f 100644
---- a/net/ceph/auth_none.c
-+++ b/net/ceph/auth_none.c
-@@ -39,6 +39,11 @@ static int should_authenticate(struct ceph_auth_client *ac)
- 	return xi->starting;
- }
- 
-+static int build_request(struct ceph_auth_client *ac, void *buf, void *end)
-+{
-+	return 0;
-+}
-+
- /*
-  * the generic auth code decode the global_id, and we carry no actual
-  * authenticate state, so nothing happens here.
-@@ -107,6 +112,7 @@ static const struct ceph_auth_client_ops ceph_auth_none_ops = {
- 	.destroy = destroy,
- 	.is_authenticated = is_authenticated,
- 	.should_authenticate = should_authenticate,
-+	.build_request = build_request,
- 	.handle_reply = handle_reply,
- 	.create_authorizer = ceph_auth_none_create_authorizer,
- 	.destroy_authorizer = ceph_auth_none_destroy_authorizer,
 diff --git a/net/compat.c b/net/compat.c
 index 8c979cc..5800e81 100644
 --- a/net/compat.c
@@ -88115,6 +88165,28 @@ index 925991a..209a505 100644
  
  #ifdef CONFIG_INET
  static u32 seq_scale(u32 seq)
+diff --git a/net/core/skbuff.c b/net/core/skbuff.c
+index af9c3c6..76914a3 100644
+--- a/net/core/skbuff.c
++++ b/net/core/skbuff.c
+@@ -2902,13 +2902,15 @@ void __init skb_init(void)
+ 	skbuff_head_cache = kmem_cache_create("skbuff_head_cache",
+ 					      sizeof(struct sk_buff),
+ 					      0,
+-					      SLAB_HWCACHE_ALIGN|SLAB_PANIC,
++					      SLAB_HWCACHE_ALIGN|SLAB_PANIC|
++					      SLAB_NO_SANITIZE,
+ 					      NULL);
+ 	skbuff_fclone_cache = kmem_cache_create("skbuff_fclone_cache",
+ 						(2*sizeof(struct sk_buff)) +
+ 						sizeof(atomic_t),
+ 						0,
+-						SLAB_HWCACHE_ALIGN|SLAB_PANIC,
++						SLAB_HWCACHE_ALIGN|SLAB_PANIC|
++						SLAB_NO_SANITIZE,
+ 						NULL);
+ }
+ 
 diff --git a/net/core/sock.c b/net/core/sock.c
 index 8a2c2dd..3ba3cf1 100644
 --- a/net/core/sock.c
@@ -94052,10 +94124,10 @@ index 38f6617..e70b72b 100755
  
  exuberant()
 diff --git a/security/Kconfig b/security/Kconfig
-index 51bd5a0..999fbad 100644
+index 51bd5a0..2ae77cf 100644
 --- a/security/Kconfig
 +++ b/security/Kconfig
-@@ -4,6 +4,945 @@
+@@ -4,6 +4,956 @@
  
  menu "Security options"
  
@@ -94792,20 +94864,31 @@ index 51bd5a0..999fbad 100644
 +	default y if (GRKERNSEC_CONFIG_AUTO && GRKERNSEC_CONFIG_PRIORITY_SECURITY)
 +	depends on !HIBERNATION
 +	help
-+	  By saying Y here the kernel will erase memory pages as soon as they
-+	  are freed.  This in turn reduces the lifetime of data stored in the
-+	  pages, making it less likely that sensitive information such as
-+	  passwords, cryptographic secrets, etc stay in memory for too long.
++	  By saying Y here the kernel will erase memory pages and slab objects
++	  as soon as they are freed.  This in turn reduces the lifetime of data
++	  stored in them, making it less likely that sensitive information such
++	  as passwords, cryptographic secrets, etc stay in memory for too long.
 +
 +	  This is especially useful for programs whose runtime is short, long
 +	  lived processes and the kernel itself benefit from this as long as
-+	  they operate on whole memory pages and ensure timely freeing of pages
-+	  that may hold sensitive information.
++	  they ensure timely freeing of memory that may hold sensitive
++	  information.
++
++	  A nice side effect of the sanitization of slab objects is the
++	  reduction of possible info leaks caused by padding bytes within the
++	  leaky structures.  Use-after-free bugs for structures containing
++	  pointers can also be detected as dereferencing the sanitized pointer
++	  will generate an access violation.
 +
 +	  The tradeoff is performance impact, on a single CPU system kernel
 +	  compilation sees a 3% slowdown, other systems and workloads may vary
 +	  and you are advised to test this feature on your expected workload
 +	  before deploying it.
++
++	  To reduce the performance penalty by sanitizing pages only, albeit
++	  limiting the effectiveness of this feature at the same time, slab
++	  sanitization can be disabled with the kernel commandline parameter
++	  "pax_sanitize_slab=0".
 +
 +	  Note that this feature does not protect data stored in live pages,
 +	  e.g., process memory swapped to disk may stay there for a long time.
@@ -95001,7 +95084,7 @@ index 51bd5a0..999fbad 100644
  config KEYS
  	bool "Enable access key retention support"
  	help
-@@ -169,7 +1108,7 @@ config INTEL_TXT
+@@ -169,7 +1119,7 @@ config INTEL_TXT
  config LSM_MMAP_MIN_ADDR
  	int "Low address space for LSM to protect from user allocation"
  	depends on SECURITY && SECURITY_SELINUX
